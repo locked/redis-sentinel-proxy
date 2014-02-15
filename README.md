@@ -1,13 +1,17 @@
-== redis proxy in erlang ==
+redis proxy in erlang
+---------------------
 
  This is a PROTOTYPE
 
-== compile ==
+compile
+-------
 
  - copy erts-5.9.1 to ./
  - copy kernel, stdlib, sasl to lib/
  - run release.sh &lt;dest_path&gt;
 
-== links ==
+links
+-----
 
+ - http://www.duomark.com/erlang/tutorials/proxy2.html
  - http://www.erlang.org/doc/system_principles/create_target.html
