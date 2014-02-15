@@ -1,0 +1,8 @@
+%% redis.rel
+{release,
+ {"redis", "FIRST"},
+ {erts, "5.9.1"},
+ [{kernel, "2.15.1"},
+  {stdlib, "1.18.1"},
+  {sasl, "2.2.1"},
+  {redis, "1.0"}]}.

@@ -1,0 +1,5 @@
+c(redis).
+c(tcp_proxy).
+application:start(redis).
+sync:go().
+{ok, P1} = tcp_proxy:start_link(redis).
