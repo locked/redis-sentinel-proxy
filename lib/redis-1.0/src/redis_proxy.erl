@@ -133,6 +133,8 @@ get_master_from_cache() ->
         {_Pid2, Master} ->
             % Master = lists:nth(1, Val),
             {ok, Master}
+    after 1 ->
+            {notfound}
     end.
 
 save_master_in_cache(Master) ->
