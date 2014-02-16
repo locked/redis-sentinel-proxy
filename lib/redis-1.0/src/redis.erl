@@ -18,189 +18,48 @@
 %%%-------------------------------------------------------------------
 -module(redis).
 
--export([init/0, terminate/0, server_busy/1, react_to/3, start/2, stop/1]).
+-export([start/2, stop/1, rediscache/0]).
 
-% -include("web_utils.hrl").
 
-start(StartType, StartArgs) ->
+start(_StartType, _StartArgs) ->
     io:format("START~n"),
-    tcp_proxy:start_link(redis).
+    Pid = spawn_link(redis, rediscache, []),
+    % io:format("rediscache: ~p~n", [Pid]),
+    register(rediscache, Pid),
+    tcp_proxy:start_link(redis_proxy).
 
-stop(State) ->
+stop(_State) ->
     io:format("STOP~n").
 
+rediscache() ->
+    receive
+        {_From, {put_redis_master, Master}} ->
+            TTL = calendar:local_time(),
+            % io:format("put in cache: ~p~n", [[Master, TTL]]),
+            put(redis_master, [Master, TTL]),
+            rediscache();
 
-init() ->
-    {ok, []}.
+        {From, get_redis_master} ->
+            Raw = get(redis_master),
+            % io:format("got RAW from cache: ~p~n", [Raw]),
+            case Raw of
+                undefined ->
+                    Master = notfound;
 
-% Write the table to disk in case new URLs were added    
-terminate() ->
-    ok.
+                [FoundMaster, TTL] ->
+                    {_,{_,_,Seconds}} = calendar:time_difference(TTL, calendar:local_time()),
+                    if Seconds > 5 -> Master = notfound;
+                              true -> Master = FoundMaster
+                    end;
 
-% When the server is busy, send a real HTML page.
-server_busy(Client) ->
-    gen_tcp:send(Client, <<"SERVER_BUSY\n">>),
-    ok.
+                _Other ->
+                    Master = notfound
+            end,
+            % io:format("got from cache: ~p~n", [Master]),
+            From ! {self(), Master},
+            rediscache();
 
-% Display proxy stats
-react_to(_Server, Client, Data = <<"*1\r\n$5\r\nproxy\r\n", Rest/binary>>) ->
-    case get_masters_from_sentinels_conf() of
-        {ok, Masters} ->
-            E = lists:nth(1, Masters),
-            Lines = [io_lib:format("$~p\r~n~s\r~n", [length(E), E]) || E <- Masters],
-            LinesStr = string:join(Lines, ""),
-            gen_tcp:send(Client, io_lib:format("*~p\r~n~s", [length(Masters), LinesStr]));
-
-        Other ->
-            gen_tcp:send(Client, <<"*2\r\n$5\r\nError\r\n">>)
-    end,
-    gen_tcp:close(Client),
-    ok;
-
-% Redis requests entry point
-react_to(_Server, Client, Data = <<"*", Rest/binary>>) ->
-    %% Uncomment this line to see what pages are requested
-    %% io:format("~s~n", [binary_to_list(URL)]),
-    get_redis(Client, Data),
-    gen_tcp:close(Client),
-    ok;
-
-% All others are considered Bad Requests (although some should be valid).
-react_to(_Server, Client, Other) ->
-    gen_tcp:send(Client, <<"BAD_REQUEST.\n">>),
-    gen_tcp:close(Client),
-    {error, {bad_request, Other}}.
-
-
-%%--------------------------------------------------------------------
-
-connect(Host) ->
-    gen_tcp:connect(Host, 6379, [binary, {active, false}, {packet, 0}]).
-
-
-send_bad_gateway(Client, Error) ->
-    gen_tcp:send(Client, lists:flatten(io_lib:print(Error, 1, 30, 100))),
-    gen_tcp:send(Client, <<"\nNO SERVER AVAILABLE\n">>).
-
-
-
-extract_master_host(Data = <<"$9\r\n", Host/binary>>) ->
-    MasterHost = re:replace(Host, "\\s+", "", [global,{return,list}]),
-    {ok, MasterHost};
-
-extract_master_host(Data) ->
-    {error, "No Match"}.
-
-
-
-read_sentinel_response(Socket) ->
-    case gen_tcp:recv(Socket, 0, 5000) of
-        {ok, RawData} ->
-            io:format("RawData: ~p~n", [RawData]),
-            extract_master_host(RawData);
-
-        Other ->
-            io:format("Recv error: ~p~n", [Other])
-    end.
-
-
-get_masters_from_sentinels_conf() ->
-    case application:get_env(redis, sentinels) of
-        {ok, Sentinels} ->
-            get_masters_from_sentinels(Sentinels, []);
-
-        {error, Reason} ->
-            {error, "No config for sentinel host"}
-    end.
-
-
-get_masters_from_sentinels([Sentinel | T], Masters) ->
-    case Sentinel of
-        {host_port, SentinelHostPort} ->
-            case get_master_from_sentinel(SentinelHostPort) of
-                {ok, Master} ->
-                    get_masters_from_sentinels(T, Masters ++ [Master]);
-                {error, Reason} ->
-                    get_masters_from_sentinels(T, Masters)
-            end;
-
-        Other ->
-            io:format("No match~n")
-    end;
-
-get_masters_from_sentinels([], Masters) ->
-    {ok, Masters}.
-
-    
-get_master_from_sentinels() ->
-    case get_masters_from_sentinels_conf() of
-        {ok, Masters} ->
-            case sets:size(sets:from_list(Masters)) of
-                1 ->
-                    {ok, lists:nth(1, Masters)};
-
-                Other ->
-                    {error, "Masters list mismatch"}
-            end;
-
-        Other ->
-            {error, "Masters list invalid"}
-    end.
-    
-
-get_master_from_sentinel([Host, Port]) ->
-    io:format("Connection to sentinel: ~p:~p~n", [Host, Port]),
-    case gen_tcp:connect(Host, Port, [binary, {active, false}, {packet, 0}]) of
-        {ok, Socket} ->
-            gen_tcp:send(Socket, <<"*2\r\n$3\r\nget\r\n$8\r\nsentinel\r\n">>),
-            read_sentinel_response(Socket);
-
-        {error, Reason} ->
-            io:format("Sentinel is unreachable: ~p~n", [Reason]),
-            {error, "Could not find master host"}
-    end.
-
-
-get_redis(Client, Data) ->
-    case get_master_from_sentinels() of
-        {ok, RedisHost} ->
-            io:format("RedisHost: ~p~n", [RedisHost]),
-            get_redis(Client, Data, RedisHost);
-
-        {error, Reason} ->
-            io:format("get_redis: ~p~n", [Reason])
-    end.
-
-get_redis(Client, Data, RedisHost) ->
-    case connect(RedisHost) of
-	% Get the page
-	{ok, Socket} ->
-	    gen_tcp:send(Socket, Data),
-	    receive_redis_data(Client, Socket),
-	    gen_tcp:close(Socket);
-	
-	% Report the error
-	{error, Reason} ->
-	    send_bad_gateway(Client, Reason);
-
-	Other ->
-	    send_bad_gateway(Client, Other)
-    end.
-
-
-receive_redis_data(Client, Socket) ->
-    case gen_tcp:recv(Socket, 0, 5000) of
-	{ok, Bin} ->
-	    gen_tcp:send(Client, Bin),
-	    receive_redis_data(Client, Socket);
-
-	{error, closed} ->
-	    ok;
-
-	{error, timeout} ->
-	    gen_tcp:send(Client, <<"GATEWAY_TIMEOUT\n">>);
-
-	Other ->
-	    send_bad_gateway(Client, Other)
+        stop ->
+            true
     end.
 
