@@ -4,6 +4,12 @@ Redis proxy in erlang
  This is a PROTOTYPE
 
 
+Configuration
+-------------
+
+ Edit lib/redis-1.0/ebin/redis.config and set the sentinels IPs.
+
+
 Compile
 -------
 
@@ -12,13 +18,17 @@ Compile
  - run release.sh &lt;dest_path&gt;
 
 
-autosync usage
+Autosync usage
 --------------
 
-Install https://github.com/rustyio/sync. Run erlang shell and type:
+Install https://github.com/rustyio/sync.
 
- application:start(redis).
- sync:go().
+In the lib/redis-1.0/src folder, run erlang shell and type:
+
+```
+application:start(redis).
+sync:go().
+```
 
 
 Links
