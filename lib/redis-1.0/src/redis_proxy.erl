@@ -75,9 +75,9 @@ send_bad_gateway(Client, Error) ->
 
 
 
-extract_master_host(<<"$9\r\n", Host/binary>>) ->
-    MasterHost = re:replace(Host, "\\s+", "", [global,{return,list}]),
-    {ok, MasterHost};
+extract_master_host(<<"*2\r\n", Host/binary>>) ->
+    [_Size, MasterHost, _PortSize, _Port, _] = re:split(Host, "\r\n"),
+    {ok, binary_to_list(MasterHost)};
 
 extract_master_host(_Data) ->
     {error, "No Match"}.
@@ -172,7 +172,7 @@ get_master_from_sentinel([Host, Port]) ->
     io:format("Connection to sentinel: ~p:~p~n", [Host, Port]),
     case gen_tcp:connect(Host, Port, [binary, {active, false}, {packet, 0}]) of
         {ok, Socket} ->
-            gen_tcp:send(Socket, <<"*2\r\n$3\r\nget\r\n$8\r\nsentinel\r\n">>),
+            gen_tcp:send(Socket, <<"*3\r\n$8\r\nSENTINEL\r\n$23\r\nget-master-addr-by-name\r\n$8\r\nmymaster\r\n">>),
             read_sentinel_response(Socket);
 
         {error, Reason} ->
