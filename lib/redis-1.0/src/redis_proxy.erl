@@ -69,11 +69,6 @@ connect(Host) ->
     gen_tcp:connect(Host, 6379, [binary, {active, false}, {packet, 0}]).
 
 
-send_bad_gateway(Client, Error) ->
-    gen_tcp:send(Client, lists:flatten(io_lib:print(Error, 1, 30, 100))),
-    gen_tcp:send(Client, <<"\nNO SERVER AVAILABLE\n">>).
-
-
 
 extract_master_host(<<"*2\r\n", Host/binary>>) ->
     [_Size, MasterHost, _PortSize, _Port, _] = re:split(Host, "\r\n"),
@@ -87,7 +82,7 @@ extract_master_host(_Data) ->
 read_sentinel_response(Socket) ->
     case gen_tcp:recv(Socket, 0, 5000) of
         {ok, RawData} ->
-            io:format("RawData: ~p~n", [RawData]),
+            % io:format("RawData: ~p~n", [RawData]),
             extract_master_host(RawData);
 
         Other ->
@@ -169,7 +164,7 @@ get_master_from_sentinels() ->
     
 
 get_master_from_sentinel([Host, Port]) ->
-    io:format("Connection to sentinel: ~p:~p~n", [Host, Port]),
+    % io:format("Connection to sentinel: ~p:~p~n", [Host, Port]),
     case gen_tcp:connect(Host, Port, [binary, {active, false}, {packet, 0}]) of
         {ok, Socket} ->
             gen_tcp:send(Socket, <<"*3\r\n$8\r\nSENTINEL\r\n$23\r\nget-master-addr-by-name\r\n$8\r\nmymaster\r\n">>),
@@ -184,7 +179,7 @@ get_master_from_sentinel([Host, Port]) ->
 get_redis(Client, Data) ->
     case get_master_from_sentinels() of
         {ok, RedisHost} ->
-            io:format("RedisHost: ~p~n", [RedisHost]),
+            % io:format("RedisHost: ~p~n", [RedisHost]),
             get_redis(Client, Data, RedisHost);
 
         {error, Reason} ->
@@ -195,32 +190,80 @@ get_redis(Client, Data, RedisHost) ->
     case connect(RedisHost) of
 	% Get the page
 	{ok, Socket} ->
+            io:format(" ToRedis> ~p~n", [Data]),
 	    gen_tcp:send(Socket, Data),
-	    receive_redis_data(Client, Socket),
+	    receive_redis_data(Client, Socket, []),
 	    gen_tcp:close(Socket);
 	
 	% Report the error
 	{error, Reason} ->
-	    send_bad_gateway(Client, Reason);
+            io:format(" [get_redis] Error: ~p~n", [Reason]),
+	    gen_tcp:close(Client);
 
 	Other ->
-	    send_bad_gateway(Client, Other)
+	    gen_tcp:close(Client)
     end.
 
 
-receive_redis_data(Client, Socket) ->
+receive_client_data(Client, Socket) ->
+    case gen_tcp:recv(Client, 0, 5000) of
+        {ok, Data} ->
+            io:format(" ToRedis> ~p~n", [Data]),
+	    gen_tcp:send(Socket, Data),
+	    receive_redis_data(Client, Socket, []),
+	    gen_tcp:close(Socket),
+	    gen_tcp:close(Client);
+
+	{error, closed} ->
+	    ok
+    end.
+
+cmd_done(<<"$", Count/binary>>, [First | _Rest]) ->
+    io:format(" [$] Length:~p / ~p~n", [byte_size(First), list_to_integer(binary_to_list(Count))]),
+    byte_size(First) == list_to_integer(binary_to_list(Count));
+
+cmd_done(<<"*", Count/binary>>, Rest) ->
+    io:format(" [*] Length:~p / ~p~n", [length(Rest), list_to_integer(binary_to_list(Count))]),
+    length(Rest) - 1 == list_to_integer(binary_to_list(Count)) * 2;
+
+cmd_done(Any, Rest) ->
+    io:format(" Any:~p~n", [Any]),
+    false.
+
+to_client(Client, Socket, Bin = <<"+OK\r\n">>, SoFar) ->
+    gen_tcp:send(Client, Bin),
+    receive_client_data(Client, Socket);
+
+to_client(Client, Socket, Bin, SoFar) ->
+    gen_tcp:send(Client, Bin),
+    NewSoFar = [Bin, SoFar],
+    CurrentBuffer = erlang:iolist_to_binary(NewSoFar),
+    % io:format(" CurrentBuffer: ~p~n", [CurrentBuffer]),
+    [First | Rest] = re:split(CurrentBuffer, "\r\n"),
+    io:format(" First: ~p Rest: ~p~n", [First, Rest]),
+    case cmd_done(First, Rest) of
+        true ->
+            io:format("  Finished~n"),
+            receive_client_data(Client, Socket);
+
+        false ->
+            io:format("  Not finished~n"),
+            receive_redis_data(Client, Socket, NewSoFar)
+    end.
+
+receive_redis_data(Client, Socket, SoFar) ->
     case gen_tcp:recv(Socket, 0, 5000) of
 	{ok, Bin} ->
-	    gen_tcp:send(Client, Bin),
-	    receive_redis_data(Client, Socket);
+            io:format(" ToClient> ~p~n", [Bin]),
+            to_client(Client, Socket, Bin, SoFar);
 
 	{error, closed} ->
 	    ok;
 
 	{error, timeout} ->
-	    gen_tcp:send(Client, <<"GATEWAY_TIMEOUT\n">>);
+            gen_tcp:close(Client);
 
 	Other ->
-	    send_bad_gateway(Client, Other)
+            gen_tcp:close(Client)
     end.
 
