@@ -206,16 +206,18 @@ get_redis(Client, Data, RedisHost) ->
 
 
 receive_client_data(Client, Socket) ->
-    case gen_tcp:recv(Client, 0, 5000) of
+    case gen_tcp:recv(Client, 0, 60000) of
         {ok, Data} ->
             io:format(" ToRedis> ~p~n", [Data]),
 	    gen_tcp:send(Socket, Data),
 	    receive_redis_data(Client, Socket, []),
-	    gen_tcp:close(Socket),
-	    gen_tcp:close(Client);
+	    gen_tcp:close(Socket);
 
 	{error, closed} ->
-	    ok
+	    ok;
+
+	{error, timeout} ->
+            io:format("[receive_client_data] timeout~n")
     end.
 
 cmd_done(<<"$", Count/binary>>, [First | _Rest]) ->
@@ -261,6 +263,7 @@ receive_redis_data(Client, Socket, SoFar) ->
 	    ok;
 
 	{error, timeout} ->
+            io:format("[receive_redis_data] timeout~n"),
             gen_tcp:close(Client);
 
 	Other ->
